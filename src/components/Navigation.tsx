@@ -2,12 +2,14 @@ import { NavLink } from 'react-router-dom';
 import { MessageSquare, Wallet } from 'lucide-react';
 import { WalletButton } from './WalletButton';
 
+
 export function Navigation() {
   const navItems = [
     { to: '/', icon: MessageSquare, label: 'Chat' },
     // { to: '/history', icon: History, label: 'History' },
     // { to: '/settings', icon: Settings, label: 'Settings' },
   ];
+
 
   return (
     <nav className="bg-white/70 backdrop-blur-xl border-b border-gray-200/50 sticky top-0 z-50">
@@ -27,10 +29,9 @@ export function Navigation() {
                 key={to}
                 to={to}
                 className={({ isActive }) =>
-                  `flex items-center space-x-2 text-sm font-medium transition-all duration-200 px-3 py-2 rounded-lg ${
-                    isActive
-                      ? 'bg-gradient-to-r from-purple-500/10 to-blue-500/10 text-purple-600'
-                      : 'text-gray-600 hover:bg-gradient-to-r hover:from-purple-50 hover:to-blue-50 hover:text-purple-600'
+                  `flex items-center space-x-2 text-sm font-medium transition-all duration-200 px-3 py-2 rounded-lg ${isActive
+                    ? 'bg-gradient-to-r from-purple-500/10 to-blue-500/10 text-purple-600'
+                    : 'text-gray-600 hover:bg-gradient-to-r hover:from-purple-50 hover:to-blue-50 hover:text-purple-600'
                   }`
                 }
               >
@@ -44,4 +45,4 @@ export function Navigation() {
       </div>
     </nav>
   );
-}
+} 

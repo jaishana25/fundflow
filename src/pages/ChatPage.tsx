@@ -4,7 +4,10 @@ import { ChatMessage } from '../components/ChatMessage';
 import { ChatInput } from '../components/ChatInput';
 import { Message } from '../types/chat';
 import { generateId } from '../utils/chat-helpers';
-import axios from 'axios'; // Import axios
+import { useContract } from '../contexts/walletContext';
+import axios from 'axios';
+import crossChainTransfer from "../api/api";
+import { utils, providers, Contract, Signer } from 'ethers';
 
 export function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([
@@ -16,9 +19,16 @@ export function ChatPage() {
     },
   ]);
 
-  const [generatingAnswer, setGeneratingAnswer] = useState(false);
+  const { connectedAddress, balance, signer, provider } = useContract();
 
+  const [generatingAnswer, setGeneratingAnswer] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // New state variables
+  const [jsonData, setJsonData] = useState<Record<string, any> | null>(null);
+  const [missingFields, setMissingFields] = useState<string[]>([]);
+  const [showMissingFieldsModal, setShowMissingFieldsModal] = useState(false);
+  const [aiLoadingMessageId, setAiLoadingMessageId] = useState<string | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -28,55 +38,141 @@ export function ChatPage() {
     scrollToBottom();
   }, [messages]);
 
+  function getMissingFields(jsonData: Record<string, any>): string[] {
+    const missingFields = [];
+    for (const key in jsonData) {
+      if (jsonData[key] === null || jsonData[key] === undefined) {
+        missingFields.push(key);
+      }
+    }
+    return missingFields;
+  }
+
+  function validateAddress(address: string): boolean {
+    return utils.isAddress(address);
+  }
+
+  async function validateToken(tokenAddress: string, provider: providers.Provider): Promise<boolean> {
+    try {
+      const code = await provider.getCode(tokenAddress);
+      return code !== "0x"; // If the contract code exists, it's valid
+    } catch (error) {
+      console.error("Error validating token:", error);
+      return false;
+    }
+  }
+
+  function validateAmount(amount: number): boolean {
+    return typeof amount === "number" && amount > 0;
+  }
+
+  const supportedNetworks: string[] = ["Ethereum", "Polygon", "BSC", "Arbitrum", "Avalanche", "Cardano", "Polkadot", "Optimism"];
+
+  function validateNetwork(network: string): boolean {
+    return supportedNetworks.includes(network);
+  }
+
   const generateAnswer = async (content: string) => {
     setGeneratingAnswer(true);
-  
+
     // Check if the user's message relates to blockchain or asset transfer
-    const isBlockchainRelated = content.toLowerCase().includes("transfer") && 
-                                 (content.toLowerCase().includes("blockchain") || content.toLowerCase().includes("asset"));
-  
+    const isBlockchainRelated = content.toLowerCase().includes("transfer") &&
+      (content.toLowerCase().includes("tokens") || content.toLowerCase().includes("asset"));
+
+    const iswalletBalanceRequest = content.toLowerCase().includes("my wallet balance") || content.toLowerCase().includes("my balance");
+
+    const isCrossChainTransfer = content.toLowerCase().includes("send") && content.toLocaleLowerCase().includes("from eth sepolia to base sepolia") && content.toLocaleLowerCase().includes("to address");
+
     let aiAnswer = '';
-  
+
     if (isBlockchainRelated) {
       // Provide a specific answer related to blockchain asset transfer
       aiAnswer = `
-        To transfer assets on the blockchain, you typically need:
-        1. A cryptocurrency wallet (e.g., MetaMask, Trust Wallet).
-        2. The recipient's wallet address.
-        3. Sufficient funds (e.g., ETH for Ethereum transactions).
-        4. A network fee (gas fee).
-  
-        The steps to transfer assets are as follows:
-        1. Open your wallet app and ensure it's connected to the correct network (e.g., Ethereum, Binance Smart Chain).
-        2. Enter the recipient’s wallet address.
-        3. Specify the amount to send and confirm the transaction.
-        4. Pay the transaction fee (gas fee).
-        5. Wait for confirmation of the transaction on the blockchain.
-  
-        Ensure you double-check the recipient address, as transactions on the blockchain are irreversible.
+      heyy I transfer your crypto across evm chains
       `;
+    } else if (iswalletBalanceRequest) {
+      if (balance !== undefined) {
+        aiAnswer = `Your wallet balance is ${balance} ETH`;
+      } else {
+        aiAnswer = `Sorry, I couldn't fetch your wallet balance. Please ensure your wallet is connected.`;
+      }
+    } else if (isCrossChainTransfer) {
+      console.log("cross chain transfer starting...");
+      // ... existing logic ...
     } else {
       try {
-        // Make API request to get a general response
+        const prompt = `
+        You are a blockchain assistant. Your task is to extract details from a user's input
+        to perform a crypto token transfer. Identify the following details from the message: 
+        - amount (number)
+        - token (e.g., ETH, USDC, MATIC)
+        - recipient (wallet address only)
+        - network (e.g., Ethereum, Polygon, BSC). 
+        - to token address [get the token address of the provided token name from the internet set it to "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE" if it is eth]
+        - for the fromTokenChainId parameter get the chain id from the internet 
+        - for the toTokenChainId parameter get the chain id from the internet 
+        
+        
+        return this data in JSON format the fields for which the user has not provided the values set them as null. 
+        User input: "${content}"`;
+
         const response = await axios({
           url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=AIzaSyBMT22ZcvsQ_5dm19TPha5uSFaJ7IlasYU`,
           method: 'post',
           data: {
-            contents: [{ parts: [{ text: content }] }],
+            contents: [{ parts: [{ text: prompt }] }],
           },
         });
-  
+
         aiAnswer = response.data.candidates[0].content.parts[0].text;
       } catch (error) {
         console.log(error);
         aiAnswer = 'Sorry, something went wrong. Please try again!';
       }
     }
-  
+
+    // Parse the JSON data
+    const parsedData = parseJSONFromBacktickString(aiAnswer);
+
+    // Get missing fields
+    const missing = getMissingFields(parsedData);
+
+    if (missing.length > 0) {
+      // Update assistant's message to prompt for missing details
+      if (aiLoadingMessageId) {
+        setMessages(prevMessages =>
+          prevMessages.map(msg =>
+            msg.id === aiLoadingMessageId
+              ? { ...msg, content: `Please provide the following details: ${missing.join(', ')}` }
+              : msg
+          )
+        );
+      }
+
+      // Set state variables
+      setJsonData(parsedData);
+      setMissingFields(missing);
+      setShowMissingFieldsModal(true);
+      setGeneratingAnswer(false); // Stop the loading spinner
+      return;
+    }
+
+    // No missing fields, proceed with processing
+    processJsonData(parsedData);
     setGeneratingAnswer(false);
-    return aiAnswer;
   };
-  
+
+  function parseJSONFromBacktickString(rawData: string): Record<string, unknown> {
+    try {
+      // Remove surrounding triple backticks and any whitespace
+      const cleanData = rawData.trim().replace(/^```json\s*|```$/g, "");
+      // Parse the cleaned string into a JSON object
+      return JSON.parse(cleanData);
+    } catch (error) {
+      console.error("Error parsing JSON:", error);
+      throw new Error("Invalid JSON format");
+    }
+  }
 
   const handleSendMessage = async (content: string) => {
     const userMessage: Message = {
@@ -97,18 +193,41 @@ export function ChatPage() {
     };
 
     setMessages(prev => [...prev, aiLoadingMessage]);
+    setAiLoadingMessageId(aiLoadingMessage.id);
 
     // Send the user's message to Gemini API for a response
-    const aiResponse = await generateAnswer(content);
+    await generateAnswer(content);
+  };
 
-    // Find the index of the "Loading your response..." message and update it with the actual response
-    setMessages(prev => {
-      return prev.map(msg =>
-        msg.id === aiLoadingMessage.id
-          ? { ...msg, content: aiResponse } // Replace loading with the actual response
-          : msg
+  // Handle submission of missing fields
+  const handleMissingFieldsSubmit = (values: Record<string, string>) => {
+    // Update jsonData with the new values
+    const updatedJsonData = { ...jsonData, ...values };
+    setJsonData(updatedJsonData);
+    setShowMissingFieldsModal(false);
+
+    // Proceed to process the updated jsonData
+    processJsonData(updatedJsonData);
+    console.log(updatedJsonData);
+  };
+
+  const processJsonData = (data: Record<string, any>) => {
+    // Update the assistant's message with confirmation
+    if (aiLoadingMessageId) {
+      setMessages(prevMessages =>
+        prevMessages.map(msg =>
+          msg.id === aiLoadingMessageId
+            ? {
+              ...msg,
+              content: `Thank you. Proceeding with the transfer of ${data.amount} ${data.token} to ${data.recipient} on ${data.network}.`,
+            }
+            : msg
+        )
       );
-    });
+    }
+    console.log();
+    // Further processing, e.g., initiate the transfer
+    // crossChainTransfer(...);
   };
 
   return (
@@ -135,6 +254,52 @@ export function ChatPage() {
 
       <div className="border-t border-gray-100 p-6 bg-white/90 backdrop-blur-sm">
         <ChatInput onSendMessage={handleSendMessage} />
+      </div>
+
+      {/* Render the modal when there are missing fields */}
+      {showMissingFieldsModal && (
+        <MissingFieldsModal
+          missingFields={missingFields}
+          onSubmit={handleMissingFieldsSubmit}
+        />
+      )}
+    </div>
+  );
+}
+
+// Modal Component
+function MissingFieldsModal({
+  missingFields,
+  onSubmit,
+}: {
+  missingFields: string[];
+  onSubmit: (values: Record<string, string>) => void;
+}) {
+  const [values, setValues] = useState<Record<string, string>>({});
+
+  const handleChange = (field: string, value: string) => {
+    setValues((prevValues) => ({ ...prevValues, [field]: value }));
+  };
+
+  const handleSubmit = () => {
+    onSubmit(values);
+  };
+
+  return (
+    <div className="modal-overlay">
+      <div className="modal-content">
+        <h2>Please provide the missing details:</h2>
+        {missingFields.map((field) => (
+          <div key={field} className="modal-field">
+            <label>{field}</label>
+            <input
+              type="text"
+              value={values[field] || ''}
+              onChange={(e) => handleChange(field, e.target.value)}
+            />
+          </div>
+        ))}
+        <button onClick={handleSubmit}>Submit</button>
       </div>
     </div>
   );
