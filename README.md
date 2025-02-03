@@ -1,1 +1,1 @@
-an ai agent chatbot that executes cross chain transactions based on a prompt
+an ai agent chatbot that executes cross chain transactions using router protocol. 
